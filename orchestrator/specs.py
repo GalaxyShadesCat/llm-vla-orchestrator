@@ -11,7 +11,7 @@ class SubtaskSpec:
     instruction: str
     success_criteria: str
     params: dict[str, Any]
-    max_retries: int = 2
+    max_attempts: int = 10
     max_attempt_seconds: float = 10.0
 
 

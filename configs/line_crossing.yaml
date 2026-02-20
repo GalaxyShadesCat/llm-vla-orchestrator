@@ -21,7 +21,7 @@ task:
         speed: 0.35
         chunk_duration_s: 0.25
         axis: x
-      max_retries: 9
+      max_attempts: 10
       max_attempt_seconds: 10.0
     - name: arm_move_left_cross_line
       instruction: "Subtask 2: move the arm to the left until it crosses the white center line."
@@ -31,5 +31,5 @@ task:
         speed: 0.35
         chunk_duration_s: 0.25
         axis: x
-      max_retries: 9
+      max_attempts: 10
       max_attempt_seconds: 10.0

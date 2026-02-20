@@ -66,7 +66,7 @@ class Orchestrator:
     def _run_subtask(self, task_name: str, subtask: SubtaskSpec) -> dict[str, Any]:
         attempts: list[dict[str, Any]] = []
         final_status = "fail"
-        max_attempts = max(1, 1 + int(subtask.max_retries))
+        max_attempts = max(1, int(subtask.max_attempts))
 
         for attempt_idx in range(max_attempts):
             started_at = datetime.now(timezone.utc).isoformat()

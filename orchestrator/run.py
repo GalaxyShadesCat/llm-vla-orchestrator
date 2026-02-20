@@ -75,7 +75,7 @@ def build_task_spec(cfg: dict[str, Any]) -> TaskSpec:
                 instruction=item["instruction"],
                 success_criteria=item["success_criteria"],
                 params=dict(item.get("params", {})),
-                max_retries=int(item.get("max_retries", 2)),
+                max_attempts=int(item.get("max_attempts", 10)),
                 max_attempt_seconds=float(item.get("max_attempt_seconds", 10.0)),
             )
         )
