@@ -1,4 +1,4 @@
-# llm-vla-orchestrator
+# LLM–VLA Orchestrator
 
 Hierarchical multimodal LLM → VLA orchestration framework integrating GPT models with π₀ (openpi) for embodied robotics research.
 
