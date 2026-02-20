@@ -9,31 +9,39 @@ PYTHON_VERSION="3.11"
 OPENPI_URL="https://github.com/Physical-Intelligence/openpi.git"
 OPENPI_DIR="openpi"
 REQ_FILE="requirements.txt"
+VENV_DIR=".venv"
 
 need_cmd() { command -v "$1" >/dev/null 2>&1; }
 
 echo "[1/7] Checking prerequisites..."
 
 need_cmd git || { echo "ERROR: git not installed."; exit 1; }
+need_cmd curl || { echo "ERROR: curl not installed."; exit 1; }
 
 if ! need_cmd uv; then
   echo "[2/7] Installing uv..."
-  need_cmd curl || { echo "ERROR: curl not installed."; exit 1; }
   curl -LsSf https://astral.sh/uv/install.sh | sh
   export PATH="$HOME/.local/bin:$PATH"
 fi
 
 need_cmd uv || { echo "ERROR: uv not found in PATH."; exit 1; }
 
-echo "[3/7] Creating virtual environment with Python ${PYTHON_VERSION}..."
+echo "[3/7] Creating virtual environment (Python ${PYTHON_VERSION})..."
 
-if [[ ! -d ".venv" ]]; then
-  uv venv --python "${PYTHON_VERSION}"
+if [[ ! -d "${VENV_DIR}" ]]; then
+  uv venv --python "${PYTHON_VERSION}" "${VENV_DIR}"
 else
-  echo "Existing .venv detected, reusing."
+  echo "Existing ${VENV_DIR} detected, reusing."
 fi
 
-echo "[4/7] Initialising/updating openpi submodule..."
+PYTHON_BIN="${VENV_DIR}/bin/python"
+
+echo "[4/7] Upgrading pip..."
+
+"${PYTHON_BIN}" -m ensurepip --upgrade >/dev/null 2>&1 || true
+"${PYTHON_BIN}" -m pip install --upgrade pip
+
+echo "[5/7] Initialising/updating openpi..."
 
 if [[ -f ".gitmodules" ]] && git config -f .gitmodules --get submodule.openpi.path >/dev/null 2>&1; then
   git submodule update --init --recursive "${OPENPI_DIR}"
@@ -49,22 +57,23 @@ else
   fi
 fi
 
-echo "[5/7] Installing openpi..."
+echo "[6/7] Installing openpi (pinned, non-editable)..."
 
 export GIT_LFS_SKIP_SMUDGE=1
-uv pip install --python .venv/bin/python -e "./${OPENPI_DIR}"
+"${PYTHON_BIN}" -m pip install "./${OPENPI_DIR}"
 
-echo "[6/7] Installing project requirements..."
+echo "[7/7] Installing project requirements..."
 
 if [[ -f "${REQ_FILE}" ]]; then
-  uv pip install --python .venv/bin/python -r "${REQ_FILE}"
+  "${PYTHON_BIN}" -m pip install -r "${REQ_FILE}"
 else
   echo "No ${REQ_FILE} found, skipping."
 fi
 
-echo "[7/7] Running sanity check..."
+echo
+echo "Running sanity check..."
 
-uv run --python .venv/bin/python python - <<'PY'
+"${PYTHON_BIN}" - <<'PY'
 import sys
 print("Python version:", sys.version)
 try:
@@ -77,7 +86,7 @@ PY
 echo
 echo "Setup complete."
 echo "Activate environment with:"
-echo "  source .venv/bin/activate"
+echo "  source ${VENV_DIR}/bin/activate"
 echo
 echo "Or run directly:"
-echo "  uv run --python .venv/bin/python python your_script.py"
+echo "  ${VENV_DIR}/bin/python your_script.py"
