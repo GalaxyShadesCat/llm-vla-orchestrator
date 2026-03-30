@@ -39,6 +39,12 @@ runs/
 .idea/
 
 # ==========================
+# Local debug artefacts
+# ==========================
+logs/
+envs/condaenv.*.requirements.txt
+
+# ==========================
 # OS files
 # ==========================
 .DS_Store
@@ -56,3 +62,15 @@ Thumbs.db
 *.pth
 *.ckpt
 *.bin
+
+# ==========================
+# Chess camera inbox
+# ==========================
+data/chess_camera/inbox/*
+!data/chess_camera/inbox/.gitkeep
+
+# ==========================
+# Chess camera state
+# ==========================
+data/chess_camera/state/*
+!data/chess_camera/state/.gitkeep

@@ -2,6 +2,12 @@
 
 Minimal scaffold for a multimodal-LLM + VLA closed loop with sequential subtasks.
 
+## Pipeline modes
+
+The orchestrator supports two modes selected by `pipeline.type` in config:
+- `motion`: arm line-crossing simulation (existing behaviour)
+- `chess_turn`: directory-based chessboard observation with legal-move memory validation
+
 ## ReAct orchestration model
 
 The orchestrator now uses an agent that can call exactly two tools:
@@ -38,10 +44,23 @@ Per verification call:
 
 ## Install
 
+Quick setup (recommended):
+
 ```bash
-python -m venv .venv
-source .venv/bin/activate
-python -m pip install -r requirements.txt
+./setup.sh
+```
+
+Manual setup:
+
+```bash
+conda env create -f envs/environment.yml
+conda activate llm-vla-orchestrator
+```
+
+To sync an existing environment to the spec:
+
+```bash
+conda env update -n llm-vla-orchestrator -f envs/environment.yml --prune
 ```
 
 Install a new package ad hoc (without editing `requirements.txt` yet):
@@ -55,6 +74,9 @@ If you need to pull the latest `openpi` submodule commit, run:
 ```bash
 git submodule update --remote openpi
 ```
+
+The recommended interpreter for this repo is:
+- `/home/lem/miniconda3/envs/llm-vla-orchestrator/bin/python`
 
 ## Run with local rule-based ReAct agent + stub verifier
 
@@ -81,6 +103,55 @@ Set deployment names in `configs/line_crossing_azure.yaml`, then run:
 ```bash
 python -m orchestrator.run --config configs/line_crossing_azure.yaml
 ```
+
+## Run chess turn pipeline (directory camera + chess memory)
+
+`chess_turn` mode expects one current image in:
+- `data/chess_camera/inbox/current.jpg`
+
+Run:
+
+```bash
+python -m orchestrator.run --config configs/chess_turn.yaml
+```
+
+Default behaviour is to persist and append chess memory across runs.
+To reset state before a run, use either:
+
+```bash
+python -m orchestrator.run --config configs/chess_turn.yaml --reset-game-state
+```
+
+or set `chess.memory.reset_on_start: true` in config.
+
+To add a note for a specific turn run:
+
+```bash
+python -m orchestrator.run --config configs/chess_turn.yaml --turn-note "White testing kingside pressure."
+```
+
+The chess pipeline will:
+- run `chesscog` inference on the current image
+- extract piece placement
+- compare with previous canonical state
+- accept only legal one-move transitions
+- persist game memory and move logs
+- store extensible memory structures (`notes`, `journal`, `events`, `stats`, `metadata`) for future reasoning/validation agents
+
+Render board images from a run:
+
+```bash
+python -m orchestrator.render_chess_boards --run-dir runs/<timestamp>
+```
+
+This writes SVG board renders to `runs/<timestamp>/boards/`.
+
+### Important caveat about FEN
+
+A single image can provide piece placement, but it cannot reliably provide full game-state fields
+(`side_to_move`, castling rights, en-passant target, halfmove clock, fullmove number).
+The pipeline therefore stores canonical game state from move history and can optionally emit a
+synthetic full FEN with configurable defaults for downstream tools.
 
 `api_version` is optional in this code.
 - If set, the code uses the Azure API-versioned client.
@@ -113,7 +184,7 @@ When enabled, traces include:
 
 ## Output artifacts
 
-Each run writes to `runs/YYYYMMDD_HHMMSS/`:
+Each run writes to `runs/YYYYMMDD_HHMMSS_microseconds/`:
 - `steps.jsonl` (one JSON record per attempt, including timestamps, params, execution summary, verifier result, and image paths)
 - `images/<subtask>/attempt_<n>_a.png`
 - `images/<subtask>/attempt_<n>_b.png`
@@ -121,3 +192,7 @@ Each run writes to `runs/YYYYMMDD_HHMMSS/`:
 Naming convention:
 - `_a.png`: frame before the action chunk
 - `_b.png`: frame after the action chunk
+
+In `chess_turn` mode, each run writes:
+- `turns.jsonl` (turn-level machine-friendly memory records)
+- `game.pgn` (human-readable chess game history)

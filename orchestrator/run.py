@@ -1,3 +1,5 @@
+"""Entrypoint for running either motion or chess orchestration pipelines."""
+
 from __future__ import annotations
 
 import argparse
@@ -9,6 +11,13 @@ import yaml
 
 from envs.mock_env import MockEnv
 from orchestrator.agent import AzureReActTaskAgent, RuleBasedTaskAgent
+from orchestrator.chess_pipeline import (
+    ChessMemoryStore,
+    ChessTurnLogger,
+    ChessTurnPipeline,
+    ChesscogCliRecognizer,
+    DirectoryCamera,
+)
 from orchestrator.core import Orchestrator
 from orchestrator.logger import RunLogger
 from orchestrator.specs import SubtaskSpec, TaskSpec
@@ -85,7 +94,21 @@ def build_task_spec(cfg: dict[str, Any]) -> TaskSpec:
 
 def parse_args() -> argparse.Namespace:
     parser = argparse.ArgumentParser(description="Run task orchestration pipeline")
-    parser.add_argument("--config", default="configs/line_crossing.yaml", help="Path to YAML config")
+    parser.add_argument(
+        "--config",
+        default="configs/line_crossing.yaml",
+        help="Path to YAML config",
+    )
+    parser.add_argument(
+        "--reset-game-state",
+        action="store_true",
+        help="Reset chess game state before running chess_turn pipeline.",
+    )
+    parser.add_argument(
+        "--turn-note",
+        default="",
+        help="Optional note attached to this chess turn and stored in memory.",
+    )
     return parser.parse_args()
 
 
@@ -153,6 +176,16 @@ def main() -> None:
     cfg = load_config(args.config)
     apply_langsmith_settings(cfg)
 
+    pipeline_cfg = cfg.get("pipeline", {})
+    pipeline_type = str(pipeline_cfg.get("type", "motion")).lower()
+    if pipeline_type == "chess_turn":
+        _run_chess_turn_pipeline(
+            cfg,
+            reset_game_state=bool(args.reset_game_state),
+            turn_note=str(args.turn_note or "").strip() or None,
+        )
+        return
+
     control_hz = int(cfg.get("control_hz", 50))
     env_cfg = cfg.get("env", {})
     run_dir = str(cfg.get("run_dir", "runs"))
@@ -183,6 +216,68 @@ def main() -> None:
     print(f"Status: {episode['status']}")
     print(f"Run directory: {episode['run_dir']}")
     print(f"Steps log: {episode['steps_log']}")
+
+
+def _run_chess_turn_pipeline(
+    cfg: dict[str, Any],
+    *,
+    reset_game_state: bool = False,
+    turn_note: str | None = None,
+) -> None:
+    run_dir = str(cfg.get("run_dir", "runs"))
+    chess_cfg = cfg.get("chess", {})
+    retries_cfg = cfg.get("retries", {})
+    camera_cfg = chess_cfg.get("camera", {})
+    memory_cfg = chess_cfg.get("memory", {})
+    recogniser_cfg = chess_cfg.get("recogniser", {})
+
+    camera = DirectoryCamera(
+        inbox_dir=str(camera_cfg.get("inbox_dir", "data/chess_camera/inbox")),
+        current_filename=str(camera_cfg.get("current_filename", "current.jpg")),
+    )
+    recogniser = ChesscogCliRecognizer(
+        python_executable=str(recogniser_cfg.get("python_executable", "python")),
+        module=str(recogniser_cfg.get("module", "chesscog.recognition.recognition")),
+        assume_white_bottom=bool(recogniser_cfg.get("assume_white_bottom", True)),
+    )
+    memory_store = ChessMemoryStore(
+        state_path=str(memory_cfg.get("state_path", "data/chess_camera/state/game_state.json")),
+        initial_fen=str(
+            memory_cfg.get(
+                "initial_fen",
+                "rnbqkbnr/pppppppp/8/8/8/8/PPPPPPPP/RNBQKBNR w KQkq - 0 1",
+            )
+        ),
+    )
+    if bool(memory_cfg.get("reset_on_start", False)) or reset_game_state:
+        reset_reason = "cli_flag" if reset_game_state else "config_reset_on_start"
+        memory_store.reset(reason=reset_reason)
+    logger = ChessTurnLogger(base_dir=run_dir)
+
+    pipeline = ChessTurnPipeline(
+        camera=camera,
+        recogniser=recogniser,
+        memory_store=memory_store,
+        logger=logger,
+        max_vision_retries_per_turn=int(retries_cfg.get("max_vision_retries_per_turn", 3)),
+        legal_match_min_confidence=float(chess_cfg.get("legal_match_min_confidence", 0.75)),
+        emit_full_fen=bool(chess_cfg.get("emit_full_fen", True)),
+        full_fen_defaults=dict(chess_cfg.get("full_fen_defaults", {})),
+        max_execution_retries_per_turn=int(retries_cfg.get("max_execution_retries_per_turn", 3)),
+        turn_note=turn_note or str(memory_cfg.get("turn_note", "")).strip() or None,
+    )
+    result = pipeline.run_turn()
+
+    print("Pipeline: chess_turn")
+    print(f"Status: {result['status']}")
+    print(f"Turn index: {result['turn_index']}")
+    print(f"Run directory: {result['run_dir']}")
+    print(f"Turns log: {result['turns_log']}")
+    print(f"PGN path: {result['pgn_path']}")
+    if result["selected_move_uci"]:
+        print(f"Detected move (UCI): {result['selected_move_uci']}")
+    else:
+        print("Detected move (UCI): none")
 
 
 if __name__ == "__main__":

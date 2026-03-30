@@ -1,92 +1,49 @@
 #!/usr/bin/env bash
 set -euo pipefail
 
-# ==========================
-# CONFIGURATION
-# ==========================
-
-PYTHON_VERSION="3.11"
-OPENPI_URL="https://github.com/Physical-Intelligence/openpi.git"
+ENV_FILE="envs/environment.yml"
+ENV_NAME="llm-vla-orchestrator"
+PYTHON_BIN="/home/lem/miniconda3/envs/${ENV_NAME}/bin/python"
 OPENPI_DIR="openpi"
-REQ_FILE="requirements.txt"
-VENV_DIR=".venv"
 
 need_cmd() { command -v "$1" >/dev/null 2>&1; }
 
-echo "[1/7] Checking prerequisites..."
-
+echo "[1/5] Checking prerequisites..."
 need_cmd git || { echo "ERROR: git not installed."; exit 1; }
-need_cmd curl || { echo "ERROR: curl not installed."; exit 1; }
+need_cmd conda || { echo "ERROR: conda not installed."; exit 1; }
 
-if ! need_cmd uv; then
-  echo "[2/7] Installing uv..."
-  curl -LsSf https://astral.sh/uv/install.sh | sh
-  export PATH="$HOME/.local/bin:$PATH"
+if [[ ! -f "${ENV_FILE}" ]]; then
+  echo "ERROR: missing ${ENV_FILE}"
+  exit 1
 fi
 
-need_cmd uv || { echo "ERROR: uv not found in PATH."; exit 1; }
-
-echo "[3/7] Creating virtual environment (Python ${PYTHON_VERSION})..."
-
-if [[ ! -d "${VENV_DIR}" ]]; then
-  uv venv --python "${PYTHON_VERSION}" "${VENV_DIR}"
+echo "[2/5] Creating or updating Conda environment (${ENV_NAME})..."
+if conda env list | awk '{print $1}' | grep -qx "${ENV_NAME}"; then
+  conda env update -n "${ENV_NAME}" -f "${ENV_FILE}" --prune
 else
-  echo "Existing ${VENV_DIR} detected, reusing."
+  conda env create -f "${ENV_FILE}"
 fi
 
-PYTHON_BIN="${VENV_DIR}/bin/python"
+echo "[3/5] Initialising git submodules..."
+git submodule update --init --recursive "${OPENPI_DIR}"
 
-echo "[4/7] Upgrading pip..."
-
-"${PYTHON_BIN}" -m ensurepip --upgrade >/dev/null 2>&1 || true
-"${PYTHON_BIN}" -m pip install --upgrade pip
-
-echo "[5/7] Initialising/updating openpi..."
-
-if [[ -f ".gitmodules" ]] && git config -f .gitmodules --get submodule.openpi.path >/dev/null 2>&1; then
-  git submodule update --init --recursive "${OPENPI_DIR}"
-else
-  if [[ -d "${OPENPI_DIR}/.git" ]]; then
-    (
-      cd "${OPENPI_DIR}"
-      git pull --ff-only
-      git submodule update --init --recursive
-    )
-  else
-    git clone --recurse-submodules "${OPENPI_URL}" "${OPENPI_DIR}"
-  fi
-fi
-
-echo "[6/7] Installing openpi (pinned, non-editable)..."
-
-export GIT_LFS_SKIP_SMUDGE=1
-"${PYTHON_BIN}" -m pip install "./${OPENPI_DIR}"
-
-echo "[7/7] Installing project requirements..."
-
-if [[ -f "${REQ_FILE}" ]]; then
-  "${PYTHON_BIN}" -m pip install -r "${REQ_FILE}"
-else
-  echo "No ${REQ_FILE} found, skipping."
-fi
-
-echo
-echo "Running sanity check..."
-
-"${PYTHON_BIN}" - <<'PY'
+echo "[4/5] Verifying interpreter and key imports..."
+conda run -n "${ENV_NAME}" python - <<'PY'
 import sys
+
+print("Python executable:", sys.executable)
 print("Python version:", sys.version)
-try:
-    import openpi
-    print("openpi import: OK")
-except Exception as e:
-    print("openpi import failed:", e)
+
+import chess  # noqa: F401
+import scipy  # noqa: F401
+import yaml  # noqa: F401
+print("Core imports: OK")
 PY
 
+echo "[5/5] Setup complete."
 echo
-echo "Setup complete."
 echo "Activate environment with:"
-echo "  source ${VENV_DIR}/bin/activate"
+echo "  conda activate ${ENV_NAME}"
 echo
-echo "Or run directly:"
-echo "  ${VENV_DIR}/bin/python your_script.py"
+echo "Recommended interpreter:"
+echo "  ${PYTHON_BIN}"
