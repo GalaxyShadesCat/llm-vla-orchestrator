@@ -1,10 +1,13 @@
 chess>=1.11.2
 fastapi>=0.115.0
+ipykernel>=6.31.0
 langchain>=0.3.28
 langchain-openai>=0.3.35
 langsmith>=0.3.16
+matplotlib>=3.9.4
 numpy==1.26.4
 openai==2.21.0
+pandas>=1.5.3
 Pillow>=8.3.1,<9.0.0
 pydantic>=2.10.0
 PyYAML>=6.0

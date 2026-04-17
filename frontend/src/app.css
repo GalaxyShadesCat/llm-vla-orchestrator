@@ -31,6 +31,18 @@ body {
   padding: 1.2rem;
 }
 
+.snapshot-shell {
+  margin: 0;
+  padding: 0;
+  width: max-content;
+  height: max-content;
+}
+
+.snapshot-frame {
+  width: max-content;
+  height: max-content;
+}
+
 .board-panel,
 .control-panel {
   background: var(--panel);
@@ -147,6 +159,21 @@ body {
 
 .status-label {
   font-weight: 400;
+}
+
+.field-label {
+  font-size: 0.9rem;
+  font-weight: 700;
+  color: #3b403f;
+}
+
+.field-select {
+  width: 100%;
+  border: 1px solid var(--border);
+  border-radius: 8px;
+  padding: 0.5rem 0.6rem;
+  background: #ffffff;
+  color: var(--ink);
 }
 
 .card p {

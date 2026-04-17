@@ -15,6 +15,7 @@ from orchestrator.engine_service import StockfishService
 from orchestrator.executor import PiZeroExecutor
 from orchestrator.game_logger import ChessMoveLogger
 from orchestrator.game_state import HONG_KONG_TZ, ChessMemoryStore
+from orchestrator.move_candidate_policy import shortlist_candidates_for_target
 from orchestrator.policy_agent import ChessOrchestratorAgent
 
 LOGGER = logging.getLogger(__name__)
@@ -49,6 +50,7 @@ class ChessGameService:
         *,
         observed_piece_placement: str,
         player_time_s: float | None,
+        policy_agent_override: ChessOrchestratorAgent | None = None,
         override_illegal: bool = False,
         source: str = "simulated",
         vision_attempts_used: int = 1,
@@ -63,12 +65,11 @@ class ChessGameService:
         memory = state["memory"]
         stats = memory["stats"]
         metadata = memory.setdefault("metadata", {})
+        active_policy_agent = policy_agent_override or self.chess_orchestrator_agent
 
-        game_objective = str(metadata.get("game_objective", "")).strip()
-        if game_objective not in {"ai_should_win", "ai_should_lose"}:
-            game_objective = self.difficulty_controller.sample_game_objective()
-            metadata["game_objective"] = game_objective
-            metadata["game_objective_set_at"] = datetime.now(HONG_KONG_TZ).isoformat()
+        game_objective = "benchmark_neutral_objective"
+        metadata["game_objective"] = game_objective
+        metadata["game_objective_set_at"] = datetime.now(HONG_KONG_TZ).isoformat()
 
         pre_fen = str(state["current_fen"])
         board_before = chess.Board(pre_fen)
@@ -181,32 +182,38 @@ class ChessGameService:
         state["player_history"] = player_history
 
         player_estimated_elo = self.difficulty_controller.estimate_player_elo(player_history)
-        effective_game_objective, objective_reason = self.difficulty_controller.resolve_effective_objective(
-            game_objective=game_objective,
-            player_history=player_history,
-            latest_player_move_evidence=asdict(player_move_evidence) if player_move_evidence else None,
+        effective_game_objective = game_objective
+        objective_reason = "benchmark_neutral_objective"
+        policy_mode = "parity_mode"
+        target_cp_loss = self.difficulty_controller.target_cp_loss(
+            policy_mode=policy_mode,
+            player_estimated_elo=player_estimated_elo,
         )
-        policy_mode = self.difficulty_controller.choose_policy_mode(effective_game_objective)
-        target_cp_loss = self.difficulty_controller.target_cp_loss(policy_mode)
 
         allow_best_play = False
-        if player_move_evidence is not None:
-            allow_best_play = (
-                player_move_evidence.centipawn_loss
-                >= self.difficulty_controller.config.allow_conversion_after_player_blunder_cp
-            )
 
+        candidate_pool_size = max(
+            int(self.stockfish_service.multipv),
+            int(active_policy_agent.candidate_count) * 2,
+        )
         candidate_pack = self.stockfish_service.get_top_move_candidates(
             board=board_after_player,
-            top_k=self.chess_orchestrator_agent.candidate_count,
+            top_k=candidate_pool_size,
+        )
+        shortlist = shortlist_candidates_for_target(
+            candidates=candidate_pack.candidates,
+            target_cp_loss=target_cp_loss,
+            shortlist_size=int(active_policy_agent.candidate_count),
         )
         LOGGER.info(
-            "move_%03d: stockfish produced %d candidates",
+            "move_%03d: stockfish produced %d candidates, shortlisted %d around target_cp_loss=%d",
             prospective_move_index,
             len(candidate_pack.candidates),
+            len(shortlist),
+            target_cp_loss,
         )
-        orchestrator_decision: ChessOrchestratorDecision = self.chess_orchestrator_agent.choose_move(
-            candidates=candidate_pack.candidates,
+        orchestrator_decision: ChessOrchestratorDecision = active_policy_agent.choose_move(
+            candidates=shortlist,
             best_eval_cp=candidate_pack.best_eval_cp,
             player_estimated_elo=player_estimated_elo,
             policy_mode=policy_mode,
@@ -287,7 +294,8 @@ class ChessGameService:
         stockfish_context = {
             "best_eval_cp": candidate_pack.best_eval_cp,
             "selected": asdict(selected_candidate),
-            "candidates": [asdict(candidate) for candidate in candidate_pack.candidates],
+            "candidate_pool": [asdict(candidate) for candidate in candidate_pack.candidates],
+            "candidates": [asdict(candidate) for candidate in shortlist],
             "orchestrator_decision_reason": orchestrator_decision.reason,
             "orchestrator_candidate_scores": orchestrator_decision.candidate_scores,
         }

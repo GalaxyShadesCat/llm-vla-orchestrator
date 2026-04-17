@@ -25,7 +25,7 @@ from orchestrator.game_logger import ChessMoveLogger
 from orchestrator.game_service import ChessGameService
 from orchestrator.game_state import ChessMemoryStore
 from orchestrator.policy_agent import ChessOrchestratorAgent
-from orchestrator.vision_agent import ChatGPTVisionRecognizer
+from orchestrator.vision_agent import VisionModelResolver, VisionProviderSettings
 
 LOGGER = logging.getLogger(__name__)
 
@@ -41,6 +41,8 @@ class AnalyseRequest(BaseModel):
     view_mode: Optional[str] = None
     camera_pitch_deg: Optional[float] = None
     camera_distance: Optional[float] = None
+    vision_model: Optional[str] = None
+    policy_model: Optional[str] = None
 
 
 class UiStateRequest(BaseModel):
@@ -57,6 +59,8 @@ class UiStateRequest(BaseModel):
     ai_last_move_seconds: float = 0.0
     player_total_seconds: float = 0.0
     ai_total_seconds: float = 0.0
+    vision_model: Optional[str] = None
+    policy_model: Optional[str] = None
 
 
 class _EventHub:
@@ -140,9 +144,142 @@ def _normalise_piece_placement(raw_value: str) -> str:
     return value
 
 
+def _split_csv(raw_value: str) -> list[str]:
+    return [item.strip() for item in str(raw_value or "").split(",") if item.strip()]
+
+
+def _first_non_empty_env(*names: str) -> str:
+    for name in names:
+        value = str(os.getenv(name, "")).strip()
+        if value:
+            return value
+    return ""
+
+
+def _build_azure_model_overrides() -> dict[str, dict[str, Any]]:
+    overrides: dict[str, dict[str, Any]] = {}
+
+    gpt4o_key = _first_non_empty_env("GPT4o_API_KEY", "GPT4O_API_KEY")
+    gpt4o_endpoint = _first_non_empty_env("GPT4o_ENDPOINT", "GPT4O_ENDPOINT")
+    gpt4o_api_version = _first_non_empty_env("GPT4o_API_VERSION", "GPT4O_API_VERSION")
+    if gpt4o_key or gpt4o_endpoint or gpt4o_api_version:
+        overrides["gpt-4o"] = {
+            "api_key": gpt4o_key,
+            "azure_endpoint": gpt4o_endpoint,
+            "api_version": gpt4o_api_version,
+        }
+
+    gpt53_key = _first_non_empty_env("GPT53_API_KEY", "GPT5_3_API_KEY")
+    gpt53_endpoint = _first_non_empty_env("GPT53_ENDPOINT", "GPT5_3_ENDPOINT")
+    gpt53_api_version = _first_non_empty_env("GPT53_API_VERSION", "GPT5_3_API_VERSION")
+    if gpt53_key or gpt53_endpoint or gpt53_api_version:
+        overrides["gpt-5.3-chat"] = {
+            "api_key": gpt53_key,
+            "azure_endpoint": gpt53_endpoint,
+            "api_version": gpt53_api_version,
+        }
+
+    return overrides
+
+
+def _build_orchestrator_model_options(chess_cfg: dict[str, Any]) -> tuple[str, list[str]]:
+    orchestrator_cfg = dict(chess_cfg.get("orchestrator_agent", {}))
+    default_model = (
+        str(orchestrator_cfg.get("model", "")).strip()
+        or os.getenv("AZURE_AGENT_DEPLOYMENT", "").strip()
+        or "Qwen/Qwen3-VL-30B-A3B-Instruct"
+    )
+    model_options = [
+        "Qwen/Qwen3-VL-30B-A3B-Instruct",
+        "Qwen/Qwen2.5-VL-72B-Instruct",
+        "gpt-5.3-chat",
+        "gpt-4o",
+        *_split_csv(str(orchestrator_cfg.get("model_options", ""))),
+        *_split_csv(str(orchestrator_cfg.get("hf_models", ""))),
+    ]
+    if default_model:
+        model_options.insert(0, default_model)
+    seen_models: set[str] = set()
+    unique_options = [
+        model for model in model_options if not (model in seen_models or seen_models.add(model))
+    ]
+    if not default_model and unique_options:
+        default_model = unique_options[0]
+    return default_model, unique_options
+
+
+def _build_orchestrator_agent_for_model(
+    *,
+    cfg: dict[str, Any],
+    model_name: str,
+) -> ChessOrchestratorAgent:
+    chess_cfg = dict(cfg.get("chess", {}))
+    orchestrator_cfg = dict(chess_cfg.get("orchestrator_agent", {}))
+    azure_overrides = _build_azure_model_overrides()
+
+    default_api_key = (
+        str(orchestrator_cfg.get("api_key", "")).strip()
+        or os.getenv("AZURE_AGENT_API_KEY", "").strip()
+    )
+    default_base_url = _resolve_base_url(
+        configured=str(orchestrator_cfg.get("base_url", "")),
+        azure_endpoint_env=os.getenv("AZURE_AGENT_ENDPOINT", "").strip(),
+    )
+    default_api_version = (
+        str(orchestrator_cfg.get("api_version", "")).strip()
+        or os.getenv("AZURE_AGENT_API_VERSION", "").strip()
+    )
+    default_azure_endpoint = (
+        str(orchestrator_cfg.get("azure_endpoint", "")).strip()
+        or os.getenv("AZURE_AGENT_ENDPOINT", "").strip()
+    )
+
+    if model_name.lower().startswith("gpt-"):
+        override = azure_overrides.get(model_name, {})
+        api_key = str(override.get("api_key", default_api_key)).strip()
+        api_version = str(override.get("api_version", default_api_version)).strip()
+        azure_endpoint = str(override.get("azure_endpoint", default_azure_endpoint)).strip()
+        base_url = str(orchestrator_cfg.get("base_url", "")).strip() or default_base_url
+        if not api_key:
+            raise ValueError(
+                f"Model '{model_name}' requires Azure/OpenAI credentials, but no API key was found."
+            )
+    else:
+        api_key = (
+            os.getenv("ORCHESTRATOR_BENCHMARK_API_KEY", "").strip()
+            or os.getenv("HUGGING_FACE_API_KEY", "").strip()
+        )
+        base_url = os.getenv("ORCHESTRATOR_BENCHMARK_BASE_URL", "").strip()
+        if not base_url:
+            base_url = "https://router.huggingface.co/v1"
+        api_version = ""
+        azure_endpoint = ""
+        if not api_key:
+            raise ValueError(
+                f"Model '{model_name}' requires Hugging Face credentials, but HUGGING_FACE_API_KEY "
+                "or ORCHESTRATOR_BENCHMARK_API_KEY is missing."
+            )
+
+    return ChessOrchestratorAgent(
+        candidate_count=int(orchestrator_cfg.get("candidate_count", 5)),
+        objective_prompt=str(
+            orchestrator_cfg.get(
+                "objective_prompt",
+                "Make the game competitive and instructive while keeping player win chance near target.",
+            )
+        ),
+        model=model_name,
+        api_key=api_key,
+        base_url=base_url or None,
+        api_version=api_version or None,
+        azure_endpoint=azure_endpoint or None,
+        max_retries=int(orchestrator_cfg.get("max_retries", 2)),
+    )
+
+
 def _build_pipeline(
     cfg: dict[str, Any],
-) -> tuple[ChessGameService, ChessMemoryStore, DirectoryCamera, Optional[ChatGPTVisionRecognizer]]:
+) -> tuple[ChessGameService, ChessMemoryStore, DirectoryCamera, VisionModelResolver]:
     chess_cfg = dict(cfg.get("chess", {}))
     memory_cfg = dict(chess_cfg.get("memory", {}))
     camera_cfg = dict(chess_cfg.get("camera", {}))
@@ -197,41 +334,12 @@ def _build_pipeline(
             ),
         )
     )
-    orchestrator_agent_cfg = dict(chess_cfg.get("orchestrator_agent", {}))
-    orchestrator_model = (
-        str(orchestrator_agent_cfg.get("model", "")).strip()
-        or os.getenv("AZURE_AGENT_DEPLOYMENT", "").strip()
-    )
-    orchestrator_api_key = (
-        str(orchestrator_agent_cfg.get("api_key", "")).strip()
-        or os.getenv("AZURE_AGENT_API_KEY", "").strip()
-    )
-    orchestrator_base_url = _resolve_base_url(
-        configured=str(orchestrator_agent_cfg.get("base_url", "")),
-        azure_endpoint_env=os.getenv("AZURE_AGENT_ENDPOINT", "").strip(),
-    )
-    orchestrator_api_version = (
-        str(orchestrator_agent_cfg.get("api_version", "")).strip()
-        or os.getenv("AZURE_AGENT_API_VERSION", "").strip()
-    )
-    orchestrator_azure_endpoint = (
-        str(orchestrator_agent_cfg.get("azure_endpoint", "")).strip()
-        or os.getenv("AZURE_AGENT_ENDPOINT", "").strip()
-    )
-    chess_orchestrator_agent = ChessOrchestratorAgent(
-        candidate_count=int(orchestrator_agent_cfg.get("candidate_count", 5)),
-        objective_prompt=str(
-            orchestrator_agent_cfg.get(
-                "objective_prompt",
-                "Make the game competitive and instructive while keeping player win chance near target.",
-            )
-        ),
-        model=orchestrator_model,
-        api_key=orchestrator_api_key,
-        base_url=orchestrator_base_url or None,
-        api_version=orchestrator_api_version or None,
-        azure_endpoint=orchestrator_azure_endpoint or None,
-        max_retries=int(orchestrator_agent_cfg.get("max_retries", 2)),
+    orchestrator_default_model, _ = _build_orchestrator_model_options(chess_cfg)
+    if not orchestrator_default_model:
+        raise ValueError("No default orchestrator model is configured.")
+    chess_orchestrator_agent = _build_orchestrator_agent_for_model(
+        cfg=cfg,
+        model_name=orchestrator_default_model,
     )
 
     pipeline = ChessGameService(
@@ -253,6 +361,7 @@ def _build_pipeline(
     vision_model = (
         str(vision_cfg.get("model", "")).strip()
         or os.getenv("AZURE_VISION_DEPLOYMENT", "").strip()
+        or "gpt-5.3-chat"
     )
     vision_api_key = (
         str(vision_cfg.get("api_key", "")).strip()
@@ -272,18 +381,31 @@ def _build_pipeline(
     )
     max_retries = int(vision_cfg.get("max_retries", 2))
 
-    recogniser: Optional[ChatGPTVisionRecognizer] = None
-    if vision_model and vision_api_key:
-        recogniser = ChatGPTVisionRecognizer(
-            model=vision_model,
-            api_key=vision_api_key,
-            base_url=vision_base_url or None,
-            api_version=vision_api_version or None,
-            azure_endpoint=vision_azure_endpoint or None,
-            max_retries=max_retries,
-        )
+    azure_allowlist_raw = str(vision_cfg.get("azure_model_allowlist", "")).strip()
+    azure_model_allowlist = {
+        item.strip() for item in azure_allowlist_raw.split(",") if item.strip()
+    }
+    if vision_model:
+        azure_model_allowlist.add(vision_model)
 
-    return pipeline, memory_store, camera, recogniser
+    model_resolver = VisionModelResolver(
+        default_model=vision_model,
+        settings=VisionProviderSettings(
+            azure_api_key=vision_api_key,
+            azure_base_url=vision_base_url,
+            azure_api_version=vision_api_version,
+            azure_endpoint=vision_azure_endpoint,
+            azure_max_retries=max_retries,
+            azure_timeout_s=float(vision_cfg.get("azure_timeout_s", 120.0)),
+            hugging_face_api_key=os.getenv("HUGGING_FACE_API_KEY", "").strip(),
+            hugging_face_max_retries=int(vision_cfg.get("hf_max_retries", 4)),
+            hugging_face_timeout_s=float(vision_cfg.get("hf_timeout_s", 90.0)),
+            azure_model_allowlist=azure_model_allowlist,
+            azure_model_overrides=_build_azure_model_overrides(),
+        ),
+    )
+
+    return pipeline, memory_store, camera, model_resolver
 
 
 def create_app(config_path: str = "configs/chess_move.yaml") -> FastAPI:
@@ -298,8 +420,45 @@ def create_app(config_path: str = "configs/chess_move.yaml") -> FastAPI:
     if camera_input_mode not in {"filesystem", "ui_render"}:
         camera_input_mode = "filesystem"
     vision_cfg = dict(chess_cfg.get("vision", {}))
+    vision_default_model = (
+        str(vision_cfg.get("model", "")).strip()
+        or os.getenv("AZURE_VISION_DEPLOYMENT", "").strip()
+        or "gpt-5.3-chat"
+    )
+    vision_model_options = [
+        "Qwen/Qwen3-VL-30B-A3B-Instruct",
+        "Qwen/Qwen2.5-VL-72B-Instruct",
+        "gpt-5.3-chat",
+        "gpt-4o",
+        *_split_csv(str(vision_cfg.get("azure_model_allowlist", ""))),
+        *_split_csv(str(vision_cfg.get("hf_models", ""))),
+    ]
+    if vision_default_model:
+        vision_model_options.insert(0, vision_default_model)
+    # Preserve order while deduplicating.
+    seen_models: set[str] = set()
+    vision_model_options = [
+        model for model in vision_model_options if not (model in seen_models or seen_models.add(model))
+    ]
     legal_retry_attempts = max(1, int(vision_cfg.get("illegal_retry_attempts", 3)))
-    pipeline, memory_store, camera, recogniser = _build_pipeline(cfg)
+    pipeline, memory_store, camera, model_resolver = _build_pipeline(cfg)
+    policy_default_model, policy_model_options = _build_orchestrator_model_options(chess_cfg)
+    policy_agent_cache: dict[str, ChessOrchestratorAgent] = {}
+    if policy_default_model:
+        policy_agent_cache[policy_default_model] = pipeline.chess_orchestrator_agent
+
+    def _resolve_policy_agent(
+        requested_model: str | None,
+    ) -> tuple[str, ChessOrchestratorAgent]:
+        selected_model = str(requested_model or "").strip() or policy_default_model
+        if not selected_model:
+            raise ValueError("No policy model was requested and no default policy model is configured.")
+        if selected_model in policy_agent_cache:
+            return selected_model, policy_agent_cache[selected_model]
+        agent = _build_orchestrator_agent_for_model(cfg=cfg, model_name=selected_model)
+        policy_agent_cache[selected_model] = agent
+        return selected_model, agent
+
     events = _EventHub()
 
     app = FastAPI(title="LLM VLA Chess Orchestrator", version="0.1.0")
@@ -327,6 +486,10 @@ def create_app(config_path: str = "configs/chess_move.yaml") -> FastAPI:
             "stats": state["memory"]["stats"],
             "player_history_len": len(state.get("player_history", [])),
             "camera_input_mode": camera_input_mode,
+            "vision_default_model": vision_default_model,
+            "vision_model_options": vision_model_options,
+            "policy_default_model": policy_default_model,
+            "policy_model_options": policy_model_options,
             "ui_state": pipeline.logger.load_ui_state(),
         }
 
@@ -367,6 +530,8 @@ def create_app(config_path: str = "configs/chess_move.yaml") -> FastAPI:
                 "ai_last_move_seconds": float(request.ai_last_move_seconds),
                 "player_total_seconds": float(request.player_total_seconds),
                 "ai_total_seconds": float(request.ai_total_seconds),
+                "vision_model": str(request.vision_model or "").strip() or None,
+                "policy_model": str(request.policy_model or "").strip() or None,
             }
         )
         return {"status": "ok", "game_id": game_id}
@@ -382,12 +547,9 @@ def create_app(config_path: str = "configs/chess_move.yaml") -> FastAPI:
         vision_attempts_used = 0
         analysis_image_data_url = request.analysis_image_data_url
         predicted_history: list[dict[str, Any]] = []
+        vision_model_used: str | None = None
+        policy_model_used: str | None = None
 
-        if recogniser is None:
-            raise HTTPException(
-                status_code=400,
-                detail="Vision recogniser is not configured. Set chess.vision.model and API key.",
-            )
         if camera_input_mode == "ui_render":
             ui_image_path = Path(camera.inbox_dir) / "frontend_capture.jpg"
             if request.analysis_image_data_url:
@@ -463,6 +625,12 @@ def create_app(config_path: str = "configs/chess_move.yaml") -> FastAPI:
             feedback: str | None = None
             max_legal_attempts = legal_retry_attempts
             latest_recognition = None
+            requested_vision_model = str(request.vision_model or "").strip() or None
+            try:
+                resolved_model_name, recogniser = model_resolver.resolve(requested_vision_model)
+            except ValueError as exc:
+                raise HTTPException(status_code=400, detail=str(exc)) from exc
+            vision_model_used = resolved_model_name
 
             for _ in range(max_legal_attempts):
                 LOGGER.info("api/player/analyse: running vision recognition attempt")
@@ -489,6 +657,7 @@ def create_app(config_path: str = "configs/chess_move.yaml") -> FastAPI:
                 predicted_history.append(
                     {
                         "attempt": len(predicted_history) + 1,
+                        "vision_model": resolved_model_name,
                         "predicted_move_san": recognition.move_san,
                         "predicted_after_piece_placement": recognition.after_piece_placement,
                         "san_is_legal": recognised_move is not None,
@@ -527,12 +696,7 @@ def create_app(config_path: str = "configs/chess_move.yaml") -> FastAPI:
                     f"Your latest SAN '{recognition.move_san}' is not legal from before_fen '{before_fen}', "
                     f"and after_piece_placement '{recognition.after_piece_placement}' is not a legal "
                     "single-move transition. "
-                    + (
-                        f"The player move SAN was '{ground_truth_move_san}'. "
-                        if ground_truth_move_san
-                        else ""
-                    )
-                    + "Try again and output one legal move with matching SAN and placement."
+                    "Try again and output one legal move with matching SAN and placement."
                 )
 
             if latest_recognition is None:
@@ -563,15 +727,22 @@ def create_app(config_path: str = "configs/chess_move.yaml") -> FastAPI:
                 "ground_truth_piece_placement": ground_truth_piece_placement,
                 "predictions": predicted_history,
                 "vision_attempts_used": vision_attempts_used,
+                "vision_model": vision_model_used,
             }
 
         if vision_attempts_used == 0:
             vision_attempts_used = 1
 
         LOGGER.info("api/player/analyse: invoking chess game service move processing")
+        requested_policy_model = str(request.policy_model or "").strip() or None
+        try:
+            policy_model_used, policy_agent = _resolve_policy_agent(requested_policy_model)
+        except ValueError as exc:
+            raise HTTPException(status_code=400, detail=str(exc)) from exc
         result = pipeline.move(
             observed_piece_placement=observed_piece_placement,
             player_time_s=request.player_time_s,
+            policy_agent_override=policy_agent,
             override_illegal=False,
             source="camera",
             vision_attempts_used=vision_attempts_used,
@@ -580,6 +751,8 @@ def create_app(config_path: str = "configs/chess_move.yaml") -> FastAPI:
             camera_pitch_deg=request.camera_pitch_deg,
             camera_distance=request.camera_distance,
         )
+        result["vision_model"] = vision_model_used
+        result["policy_model"] = policy_model_used
         LOGGER.info("api/player/analyse: completed status=%s move_index=%s", result.get("status"), result.get("move_index"))
         await events.broadcast({"event": "move_analysed", "data": result})
         return result

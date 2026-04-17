@@ -5,9 +5,7 @@ from __future__ import annotations
 import json
 from typing import Any
 
-from langchain.agents import AgentExecutor, create_tool_calling_agent
-from langchain_core.prompts import ChatPromptTemplate, MessagesPlaceholder
-from langchain_core.tools import tool
+from langchain_core.prompts import ChatPromptTemplate
 from langchain_openai import AzureChatOpenAI, ChatOpenAI
 from langsmith import traceable
 
@@ -29,7 +27,7 @@ class ChessOrchestratorAgent:
         azure_endpoint: str | None = None,
         max_retries: int = 2,
     ) -> None:
-        self.candidate_count = max(2, int(candidate_count))
+        self.candidate_count = max(5, int(candidate_count))
         self.objective_prompt = objective_prompt
         self.model = model.strip()
         self.max_retries = max(1, int(max_retries))
@@ -101,65 +99,40 @@ class ChessOrchestratorAgent:
         }
         guidance = (
             "You are the Chess Trainer. Choose exactly one move from candidates. "
-            "Primary rule: keep the game close and competitive. Prefer moves that keep evaluation "
-            "within close_game_eval_window_cp of equality when plausible. "
-            "Secondary rule: apply game_objective as a bias, not an excuse to make the game one-sided. "
-            "ai_should_win means slightly stronger practical pressure; ai_should_lose means slightly "
-            "more training-friendly pressure. "
-            "If the player blundered hard and allow_best_play is true, you may convert more directly."
+            "Primary rule: choose a move that is pedagogically sound and keeps the game competitive "
+            "for the player level. Prefer moves that keep evaluation within close_game_eval_window_cp "
+            "of equality when plausible. Do not choose engine-best conversion lines if they make the "
+            "game one-sided. "
+            "Secondary rule: when 2+ candidates are similarly trainer-appropriate, choose according to "
+            "natural preference rather than forcing balance manually."
         )
 
         feedback: str | None = None
         last_error = "unknown"
         for _ in range(self.max_retries):
-            @tool
-            def describe_candidate(uci: str) -> str:
-                """Get full candidate details by UCI from the provided shortlist."""
-                candidate = candidate_map.get(uci)
-                if candidate is None:
-                    return json.dumps({"error": f"Unknown candidate UCI: {uci}"})
-                return json.dumps(
-                    {
-                        "uci": candidate.uci,
-                        "san": candidate.san,
-                        "eval_cp": candidate.eval_cp,
-                        "cp_loss": candidate.cp_loss,
-                    }
-                )
-
-            tools = [describe_candidate]
             prompt = ChatPromptTemplate.from_messages(
                 [
                     (
                         "system",
                         (
                             f"{guidance} "
-                            "You may call tools to inspect candidates. "
+                            "Do not use tools. "
                             "Return strict JSON with keys: selected_uci, reason, candidate_scores."
                         ),
                     ),
                     ("human", "{input}"),
-                    MessagesPlaceholder("agent_scratchpad"),
                 ]
             )
-            agent = create_tool_calling_agent(self.llm, tools, prompt)
-            executor = AgentExecutor(
-                agent=agent,
-                tools=tools,
-                verbose=False,
-                handle_parsing_errors=True,
+            messages = prompt.format_messages(
+                input=json.dumps(
+                    {
+                        "context": context,
+                        "feedback": feedback,
+                    }
+                )
             )
-            result = executor.invoke(
-                {
-                    "input": json.dumps(
-                        {
-                            "context": context,
-                            "feedback": feedback,
-                        }
-                    )
-                }
-            )
-            raw_output = str(result.get("output", "")).strip()
+            response = self.llm.invoke(messages)
+            raw_output = str(response.content).strip()
             payload = self._parse_json_object(raw_output)
             selected_uci = str(payload.get("selected_uci", "")).strip()
             if selected_uci not in candidate_map:

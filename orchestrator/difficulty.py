@@ -8,6 +8,7 @@ from typing import Any
 from langsmith import traceable
 
 from orchestrator.chess_types import DifficultyConfig
+from orchestrator.move_candidate_policy import target_cp_loss_from_elo
 
 
 class DifficultyController:
@@ -79,13 +80,9 @@ class DifficultyController:
         return effective_objective, reason
 
     @traceable(name="chess_difficulty_target_cp_loss", run_type="tool")
-    def target_cp_loss(self, policy_mode: str) -> int:
-        if policy_mode == "soft_mode":
-            return min(
-                self.config.max_forced_blunder_cp,
-                max(15, int(self.config.soft_mode_elo_offset * 1.1)),
-            )
-        return min(
-            self.config.max_forced_blunder_cp,
-            max(5, int(self.config.parity_mode_elo_offset * 0.45)),
+    def target_cp_loss(self, *, policy_mode: str, player_estimated_elo: int) -> int:
+        target = target_cp_loss_from_elo(
+            player_estimated_elo=int(player_estimated_elo),
+            policy_mode=str(policy_mode),
         )
+        return min(int(self.config.max_forced_blunder_cp), int(target))

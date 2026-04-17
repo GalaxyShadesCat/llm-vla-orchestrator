@@ -25,6 +25,7 @@
   },
   "devDependencies": {
     "@vitejs/plugin-react": "^4.3.3",
+    "playwright": "^1.54.2",
     "vite": "^5.4.10"
   }
 }

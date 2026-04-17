@@ -149,6 +149,87 @@ function uiCacheKey(gameId) {
   return `${UI_CACHE_KEY_PREFIX}${gameId}`;
 }
 
+function getSnapshotConfig() {
+  const params = new URLSearchParams(window.location.search);
+  if (params.get("snapshot") !== "1") {
+    return null;
+  }
+  const fen = String(params.get("fen") || "").trim();
+  const pitch = Number(params.get("pitch") || "65");
+  const distance = Number(params.get("distance") || "18");
+  const width = Number(params.get("width") || "560");
+  return {
+    fen,
+    pitch,
+    distance,
+    width
+  };
+}
+
+function SnapshotApp({ config }) {
+  const frameRef = useRef(null);
+  const piecePlacement = useMemo(() => {
+    const fenValue = String(config.fen || "").trim();
+    if (!fenValue) {
+      return "8/8/8/8/8/8/8/8";
+    }
+    return fenToPiecePlacement(fenValue);
+  }, [config.fen]);
+  const boardPosition = useMemo(
+    () => piecePlacementToBoardPosition(piecePlacement),
+    [piecePlacement]
+  );
+
+  useEffect(() => {
+    let isMounted = true;
+    window.__snapshotReady = false;
+    window.__snapshotAssetsReady = false;
+    async function waitForCanvas() {
+      for (let attempt = 0; attempt < 200; attempt += 1) {
+        if (!isMounted) {
+          return;
+        }
+        const canvas = frameRef.current?.querySelector("canvas");
+        if (canvas && typeof canvas.toDataURL === "function") {
+          const widthReady = Number(canvas.width) >= Math.max(500, Number(config.width) - 20);
+          const heightReady = Number(canvas.height) >= Math.max(500, Number(config.width) - 20);
+          const assetsReady = window.__snapshotAssetsReady === true;
+          if (widthReady && heightReady && assetsReady) {
+            await new Promise((resolve) => window.requestAnimationFrame(() => resolve()));
+            await new Promise((resolve) => window.requestAnimationFrame(() => resolve()));
+            const snapshot = canvas.toDataURL("image/png");
+            if (snapshot.length > 5000) {
+              window.__snapshotReady = true;
+              return;
+            }
+          }
+        }
+        await new Promise((resolve) => window.setTimeout(resolve, 50));
+      }
+    }
+    void waitForCanvas();
+    return () => {
+      isMounted = false;
+    };
+  }, []);
+
+  return (
+    <main className="snapshot-shell">
+      <div ref={frameRef} className="snapshot-frame">
+        <ChessBoard3D
+          boardPosition={boardPosition}
+          width={config.width}
+          cameraPitchDeg={config.pitch}
+          cameraDistance={config.distance}
+          onAssetsReady={() => {
+            window.__snapshotAssetsReady = true;
+          }}
+        />
+      </div>
+    </main>
+  );
+}
+
 function readLocalUiState(gameId) {
   if (!gameId) {
     return null;
@@ -183,7 +264,16 @@ function updatedAtMs(value) {
   return timeMs;
 }
 
+function formatModelLabel(modelName) {
+  return String(modelName || "").replace(/^Qwen\//, "");
+}
+
 export default function App() {
+  const snapshotConfig = getSnapshotConfig();
+  if (snapshotConfig) {
+    return <SnapshotApp config={snapshotConfig} />;
+  }
+
   const boardFrameRef = useRef(null);
   const uiRenderFrameRef = useRef(null);
   const uiHydratedRef = useRef(false);
@@ -211,8 +301,22 @@ export default function App() {
   const [gameId, setGameId] = useState("");
   const [viewMode, setViewMode] = useState("2d");
   const [cameraInputMode, setCameraInputMode] = useState("filesystem");
-  const [cameraPitchDeg, setCameraPitchDeg] = useState(65);
+  const [cameraPitchDeg, setCameraPitchDeg] = useState(60);
   const [cameraDistance, setCameraDistance] = useState(18);
+  const [visionModel, setVisionModel] = useState("Qwen/Qwen3-VL-30B-A3B-Instruct");
+  const [visionModelOptions, setVisionModelOptions] = useState([
+    "Qwen/Qwen3-VL-30B-A3B-Instruct",
+    "Qwen/Qwen2.5-VL-72B-Instruct",
+    "gpt-5.3-chat",
+    "gpt-4o"
+  ]);
+  const [policyModel, setPolicyModel] = useState("Qwen/Qwen3-VL-30B-A3B-Instruct");
+  const [policyModelOptions, setPolicyModelOptions] = useState([
+    "Qwen/Qwen3-VL-30B-A3B-Instruct",
+    "Qwen/Qwen2.5-VL-72B-Instruct",
+    "gpt-5.3-chat",
+    "gpt-4o"
+  ]);
 
   const CAMERA_MIN_PITCH_DEG = 8;
   const CAMERA_MAX_PITCH_DEG = 88;
@@ -312,6 +416,40 @@ export default function App() {
         setBoardPosition(piecePlacementToBoardPosition(loadedPlacement));
         setCurrentFen(currentFen);
         setCameraInputMode(loadedCameraInputMode);
+        const loadedVisionDefault = String(data.vision_default_model || "").trim();
+        const loadedVisionOptions = Array.isArray(data.vision_model_options)
+          ? data.vision_model_options
+            .map((item) => String(item || "").trim())
+            .filter(Boolean)
+          : [];
+        const loadedPolicyDefault = String(data.policy_default_model || "").trim();
+        const loadedPolicyOptions = Array.isArray(data.policy_model_options)
+          ? data.policy_model_options
+            .map((item) => String(item || "").trim())
+            .filter(Boolean)
+          : [];
+        const fallbackVisionOptions = [
+          "Qwen/Qwen3-VL-30B-A3B-Instruct",
+          "Qwen/Qwen2.5-VL-72B-Instruct",
+          "gpt-5.3-chat",
+          "gpt-4o"
+        ];
+        const fallbackPolicyOptions = [
+          "Qwen/Qwen3-VL-30B-A3B-Instruct",
+          "Qwen/Qwen2.5-VL-72B-Instruct",
+          "gpt-5.3-chat",
+          "gpt-4o"
+        ];
+        const nextVisionOptions = loadedVisionOptions.length > 0
+          ? loadedVisionOptions
+          : fallbackVisionOptions;
+        const nextPolicyOptions = loadedPolicyOptions.length > 0
+          ? loadedPolicyOptions
+          : fallbackPolicyOptions;
+        setVisionModelOptions(nextVisionOptions);
+        setPolicyModelOptions(nextPolicyOptions);
+        setVisionModel(loadedVisionDefault || nextVisionOptions[0] || "gpt-5.3-chat");
+        setPolicyModel(loadedPolicyDefault || nextPolicyOptions[0] || "gpt-5.3-chat");
 
         const loadedBoard = new Chess(currentFen);
         const hasGameProgress =
@@ -369,6 +507,20 @@ export default function App() {
           setAiLastMoveSeconds(Math.max(0, Number(syncedUiState.ai_last_move_seconds || 0)));
           setPlayerTotalSeconds(Math.max(0, Number(syncedUiState.player_total_seconds || 0)));
           setAiTotalSeconds(Math.max(0, Number(syncedUiState.ai_total_seconds || 0)));
+          const cachedVisionModel = String(syncedUiState.vision_model || "").trim();
+          if (cachedVisionModel) {
+            if (!nextVisionOptions.includes(cachedVisionModel)) {
+              setVisionModelOptions((prev) => [cachedVisionModel, ...prev]);
+            }
+            setVisionModel(cachedVisionModel);
+          }
+          const cachedPolicyModel = String(syncedUiState.policy_model || "").trim();
+          if (cachedPolicyModel) {
+            if (!nextPolicyOptions.includes(cachedPolicyModel)) {
+              setPolicyModelOptions((prev) => [cachedPolicyModel, ...prev]);
+            }
+            setPolicyModel(cachedPolicyModel);
+          }
           if (String(syncedUiState.status_text || "") === "Player move") {
             setPlayerMoveStartedAt(Date.now());
             setAiMoveStartedAt(null);
@@ -407,7 +559,9 @@ export default function App() {
       player_last_move_seconds: playerLastMoveSeconds,
       ai_last_move_seconds: aiLastMoveSeconds,
       player_total_seconds: playerTotalSeconds,
-      ai_total_seconds: aiTotalSeconds
+      ai_total_seconds: aiTotalSeconds,
+      vision_model: visionModel,
+      policy_model: policyModel
     };
     writeLocalUiState(gameId, payload);
     void fetch(getApiUrl("/api/ui/state"), {
@@ -425,7 +579,9 @@ export default function App() {
     lastResult,
     playerLastMoveSeconds,
     playerTotalSeconds,
-    statusText
+    statusText,
+    visionModel,
+    policyModel
   ]);
 
   useEffect(() => {
@@ -567,7 +723,9 @@ export default function App() {
           bypass_vision_with_ground_truth: false,
           view_mode: viewMode,
           camera_pitch_deg: cameraPitchDeg,
-          camera_distance: cameraDistance
+          camera_distance: cameraDistance,
+          vision_model: visionModel,
+          policy_model: policyModel
         })
       });
       const data = await response.json().catch(() => ({}));
@@ -626,7 +784,9 @@ export default function App() {
           bypass_vision_with_ground_truth: true,
           view_mode: visionBypassPayload.viewMode,
           camera_pitch_deg: visionBypassPayload.cameraPitchDeg,
-          camera_distance: visionBypassPayload.cameraDistance
+          camera_distance: visionBypassPayload.cameraDistance,
+          vision_model: visionModel,
+          policy_model: policyModel
         })
       });
       const data = await response.json().catch(() => ({}));
@@ -773,6 +933,38 @@ export default function App() {
             <span className="status-label">Status:</span>
             <span className={`status-chip ${statusTone}`}>{statusText}</span>
           </div>
+          <label className="field-label" htmlFor="vision-model">
+            Vision model
+          </label>
+          <select
+            id="vision-model"
+            className="field-select"
+            value={visionModel}
+            onChange={(event) => setVisionModel(event.target.value)}
+            disabled={isLoading}
+          >
+            {visionModelOptions.map((option) => (
+              <option key={option} value={option}>
+                {formatModelLabel(option)}
+              </option>
+            ))}
+          </select>
+          <label className="field-label" htmlFor="policy-model">
+            Policy model
+          </label>
+          <select
+            id="policy-model"
+            className="field-select"
+            value={policyModel}
+            onChange={(event) => setPolicyModel(event.target.value)}
+            disabled={isLoading}
+          >
+            {policyModelOptions.map((option) => (
+              <option key={option} value={option}>
+                {formatModelLabel(option)}
+              </option>
+            ))}
+          </select>
           <div className="timers-grid">
             <div className="timer-block">
               <p>Player timer: {playerTimerText}</p>

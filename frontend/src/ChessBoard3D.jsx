@@ -1,7 +1,7 @@
-import { Suspense, useMemo } from "react";
+import { Suspense, useEffect, useMemo, useRef } from "react";
 import * as THREE from "three";
 import { Canvas, useThree } from "@react-three/fiber";
-import { OrbitControls, Text, useGLTF } from "@react-three/drei";
+import { OrbitControls, Text, useGLTF, useProgress } from "@react-three/drei";
 
 const MODEL_PATH = "/models/chess/low_poly_chess_set.glb";
 const PIECE_Y_OFFSET = 0.50;
@@ -314,12 +314,27 @@ export default function ChessBoard3D({
   boardPosition,
   width = 560,
   cameraPitchDeg = 37,
-  cameraDistance = 15.0
+  cameraDistance = 15.0,
+  onAssetsReady = null
 }) {
   const pitchRad = (cameraPitchDeg * Math.PI) / 180;
   const camY = Math.max(4.2, Math.sin(pitchRad) * cameraDistance);
   const camZ = Math.max(0.35, Math.cos(pitchRad) * cameraDistance);
   const fov = 38;
+  const { active, progress, errors } = useProgress();
+  const didNotifyReadyRef = useRef(false);
+
+  useEffect(() => {
+    if (didNotifyReadyRef.current) {
+      return;
+    }
+    if (!active && progress >= 100 && errors.length === 0) {
+      didNotifyReadyRef.current = true;
+      if (typeof onAssetsReady === "function") {
+        onAssetsReady();
+      }
+    }
+  }, [active, errors.length, onAssetsReady, progress]);
 
   return (
     <div style={{ width: `${width}px`, height: `${width}px` }}>

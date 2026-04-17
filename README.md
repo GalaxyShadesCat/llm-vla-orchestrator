@@ -76,6 +76,10 @@ Vision config resolution:
 - `chess.vision.base_url` falls back to `AZURE_VISION_ENDPOINT` (converted to `/openai/v1`)
 - `chess.vision.api_version` falls back to `AZURE_VISION_API_VERSION`
 - `chess.vision.azure_endpoint` falls back to `AZURE_VISION_ENDPOINT`
+- `chess.vision.azure_model_allowlist` defines Azure-routed deployment names (comma-separated)
+- `chess.vision.hf_max_retries` configures Hugging Face retry attempts for rate-limit resilience
+- `chess.vision.hf_timeout_s` configures Hugging Face request timeout in seconds
+- `HUGGING_FACE_API_KEY` is used for non-`gpt-*` vision models via Hugging Face chat completions
 
 For one-shot CLI debugging (without UI):
 
@@ -125,6 +129,7 @@ UI controls:
 - `Start Game` / `Reset Game`
 - Drag-and-drop legal player moves (move completion auto-triggers analysis)
 - `Player View` / `Chess Camera` toggle controls which board rendering is captured and sent for analysis logging
+- `Vision model` dropdown to choose the active model for analysis (`gpt-5.3-chat` default)
 
 ### Important caveat about FEN
 
@@ -172,3 +177,23 @@ Each chess game writes:
 - `games/<game_date_time>/moves/move_XXX/move_XXX_<source>.png` (camera snapshot used for analysis)
 
 Each completed player move writes to its own directory: `moves/move_001`, `moves/move_002`, and so on.
+
+## Vision benchmark harness
+
+Generate random chess transitions and benchmark multiple vision models:
+
+```bash
+# one-time browser install for snapshot capture
+cd frontend && npx playwright install chromium && cd ..
+
+python -m orchestrator.benchmark_vision_models \
+  --config configs/chess_move.yaml \
+  --samples 20 \
+  --models "gpt-5.3-chat,gpt-4o,Qwen/Qwen2.5-VL-7B-Instruct,zai-org/GLM-4.5V"
+```
+
+Outputs in `data/benchmark_vision/`:
+- `samples.jsonl`: generated ground-truth benchmark set
+- `images/sample_XXX.png`: rendered from the frontend `ChessBoard3D` view (same default pitch/zoom)
+- `vision_predicitions.csv`: per-sample per-model predictions and legality checks
+- `vision_summary.csv`: aggregate metrics (`accuracy`, `success rate`, `runtime` excluding failed calls, retries, confidence)

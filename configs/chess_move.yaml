@@ -26,13 +26,18 @@ chess:
 
   # ChatGPT vision configuration for SAN move extraction from before_fen + after image.
   vision:
-    model: ""
+    model: "gpt-5.3-chat"
     api_key: ""
     base_url: ""
     azure_endpoint: ""
     api_version: ""
+    # Optional comma-separated Azure deployment names for model routing.
+    azure_model_allowlist: "gpt-5.3-chat,gpt-4o"
     max_retries: 1
+    azure_timeout_s: 120
     illegal_retry_attempts: 3
+    hf_max_retries: 4
+    hf_timeout_s: 90
 
   # Local Stockfish engine settings.
   engine:
@@ -62,11 +67,11 @@ chess:
 
   # Agent that chooses one move from top engine candidates using game context.
   orchestrator_agent:
-    model: ""
+    model: "Qwen/Qwen3-VL-30B-A3B-Instruct"
     api_key: ""
     base_url: ""
     azure_endpoint: ""
     api_version: ""
     max_retries: 2
     candidate_count: 5
-    objective_prompt: "Train the player with close games while keeping target win-rate balance."
+    objective_prompt: "Primary rule (hard): choose a move that is pedagogically sound and keeps the game competitive for the player level. Do not choose engine-best conversion lines if they make the game one-sided. Secondary rule (style probe): when 2+ candidates are similarly trainer-appropriate, choose according to your natural preference rather than forcing balance manually."

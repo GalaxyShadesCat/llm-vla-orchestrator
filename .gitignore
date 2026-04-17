@@ -41,6 +41,7 @@ games/
 # ==========================
 .vscode/
 .idea/
+.codex
 
 # ==========================
 # Local debug artefacts
