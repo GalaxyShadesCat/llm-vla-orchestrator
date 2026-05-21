@@ -2,7 +2,7 @@
 
 ## Team Members
 
-Aaron Chris Dsouza (3036440892)
+Aaron Chris Dsouza (3036440892)  
 Hui Lem (3035994004)
 
 ## Abstract
@@ -352,11 +352,15 @@ The notebook also summarised the move-selection benchmark stored in `data/benchm
 | `Qwen2.5-VL-72B` | 50/50 | 4% | 257.62 | 10% | 24% | 66% |
 | `Qwen3-VL-30B-A3B` | 50/50 | 66% | 35.10 | 26% | 48% | 26% |
 
-![Average selected centipawn loss by model in the move-selection benchmark.](report_assets/move_cp_loss_by_model.png){ width=95% }
+\begin{center}
+\includegraphics[width=0.82\textwidth]{report_assets/move_cp_loss_by_model.png}
+\captionof{figure}{Average selected centipawn loss by model in the move-selection benchmark.}
+\end{center}
 
-\clearpage
-
-![Move-style distribution for successful move-selection benchmark rows.](report_assets/move_style_distribution.png){ width=95% }
+\begin{center}
+\includegraphics[width=0.82\textwidth]{report_assets/move_style_distribution.png}
+\captionof{figure}{Move-style distribution for successful move-selection benchmark rows.}
+\end{center}
 
 ## Results Analysis
 
